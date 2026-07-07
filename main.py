@@ -19,7 +19,12 @@ ai_client = OpenAI(
 )
 
 # 2. Создаем новую Базу Данных для автосервиса
-conn = sqlite3.connect('autoservice.db', check_same_thread=False)
+# Намертво привязываем базу данных к текущей папке бота!
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+db_path = os.path.join(BASE_DIR, 'autoservice.db')
+
+conn = sqlite3.connect(db_path, check_same_thread=False)
+
 cursor = conn.cursor()
 
 # Создаем таблицу клиентов СТО (ID, Имя, Телефон, Марка машины)
@@ -30,12 +35,50 @@ CREATE TABLE IF NOT EXISTS clients (
     client_name TEXT,
     car_model TEXT
 )''')
+# Создаем таблицу ПРАЙС-ЛИСТА (Услуга, Цена Стандарт, Цена Премиум, Запчасти)
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS price_list (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    service_keyword TEXT,  
+    price_standard INTEGER, 
+    price_premium INTEGER,  
+    parts_cost INTEGER      
+)''')
+cursor.execute("SELECT COUNT(*) FROM price_list")
+if cursor.fetchone()[0] == 0:
+    services = [
+        ('колодк', 1500, 2500, 1800),
+        ('масл', 1000, 2000, 3500),
+        ('диагност', 1200, 2500, 0),
+        ('шаров', 1800, 3500, 2200),
+        ('проводк', 2000, 4500, 2500)
+    ]
+    cursor.executemany("INSERT INTO price_list (service_keyword, price_standard, price_premium, parts_cost) VALUES (?, ?, ?, ?)", services)
+# Создаем таблицу ЗАПИСЕЙ НА РЕМОНТ (Календарь СТО)
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    client_name TEXT,
+    car_model TEXT,
+    service_name TEXT,
+    booking_date TEXT,
+    booking_time TEXT
+    )''')           
+                  
+cursor.execute("SELECT COUNT(*) FROM orders")
+if cursor.fetchone()[0] == 0:
+    fake_orders = [
+        (111222, 'Иван', 'Toyota', 'замена масла', '08.07', '09:00'),
+        (333444, 'Олег', 'BMW', 'замена колодок', '08.07', '15:00')
+    ]
+    cursor.executemany("INSERT INTO orders (user_id, client_name, car_model, service_name, booking_date, booking_time) VALUES (?, ?, ?, ?, ?, ?)", fake_orders)
 conn.commit()
 
 # 1. Приветствие и запуск конвейера сбора данных
 @bot.message_handler(commands=['start'])
 def start_message(message):
-    local_conn = sqlite3.connect('autoservise.db')
+    local_conn = sqlite3.connect(db_path)
     local_cursor = local_conn.cursor()
     local_cursor.execute('''
     CREATE TABLE IF NOT EXISTS clients (
@@ -78,7 +121,7 @@ def get_car(message, user_name):
 def handle_client_text(message):
     waiting_msg = bot.send_message(message.chat.id, "🔧 ИИ-мастер изучает ваш вопрос, подождите секунду...")
 
-    local_conn = sqlite3.connect('autoservice.db')
+    local_conn = sqlite3.connect(db_path)
     local_cursor = local_conn.cursor()
     local_cursor.execute("SELECT client_name, car_model FROM clients WHERE user_id = ?", (message.chat.id,))
     client_data = local_cursor.fetchone()
@@ -94,34 +137,40 @@ def handle_client_text(message):
 # МАТЕМАТИЧЕСКИЙ БЛОК: Автоматический расчет базовой стоимости (STEM)
 # Если клиент спрашивает про цену, колодки или масло, задаем базовую ставку
     base_price_text = ""
-    user_query = message.text.lower()
+    user_query = message.text.lower().strip()
     car_brand = car.lower().strip()
-    if "колодк" in user_query: 
-        if "lexus" in car_brand or "toyota" in car_brand or "bmw" in car_brand or "mersedes" in car_brand:
-            work_cost = 2500
-            parts_cost = 4500
-            class_name = "премиум-класс"
-        else:
-            work_cost = 1500
-            parts_cost = 1800
-            class_name = "стандарт-класс"
-        total_price = work_cost + parts_cost # Работа + расходники (пример расчета)
-        base_price_text = f"Стоимость замены колодок для вашего автомобиля {car} ({class_name}) составляет: работа - {work_cost} руб., колодки - {parts_cost} руб. Итого под ключ: {total_price} рублей."
+    if "lexus" in car_brand or "toyota" in car_brand or "bmw" in car_brand or "mersedes" in car_brand or "touareg" in car_brand:
+        is_premium = True
+        class_name = "премиум-класс"
+    else:
+        is_premium = False
+        class_name = "стандарт-класс"
 
-    elif "масл" in user_query:
-        if "lexus" in car_brand or "toyota" in car_brand or "bmw" in car_brand or "mersedes" in car_brand:
-            work_cost = 9000
-            parts_cost = 14500
-            class_name = "премиум-класс"
-        else:
-            work_cost = 3100
-            parts_cost = 5500
-            class_name = "стандарт-класс"
-        total_price = work_cost + parts_cost # Работа + расходники (пример расчета)
-        base_price_text = f"Стоимость замены масла для вашего автомобиля {car} ({class_name}) составляет: работа - {work_cost} руб., масло и фильтр - {parts_cost} руб. Итого под ключ: {total_price} рублей."
-    elif "диагност" in user_query:
-        price = 5500
-        base_price_text = f" Стоимость комплексной диагностики: {price} рублей."
+    local_conn = sqlite3.connect('autoservice.db')
+    local_cursor = local_conn.cursor()
+    local_cursor.execute("SELECT service_keyword, price_standard, price_premium, parts_cost FROM price_list")
+    all_services = local_cursor.fetchall()
+    local_conn.close()
+
+    for row in all_services:
+        keyword = row[0] # наше ключевое слово из базы (например: шаров, проводк)
+        
+        if keyword in user_query:
+            # Вытаскиваем тарифы из строки базы данных (STEM)
+            price_standard = row[1]
+            price_premium = row[2]
+            parts_cost = row[3]
+            
+            # На ходу выбираем нужную колонку в зависимости от класса авто (STEM)
+            if is_premium:
+                work_cost = price_premium
+            else:
+                work_cost = price_standard
+                
+            # Математика Python сама считает итоговую сумму под ключ (STEM)
+            total_price = work_cost + parts_cost
+            base_price_text = f"Стоимость ремонта для вашего автомобиля {car} ({class_name}) составляет: работа — {work_cost} руб., необходимые расходники/детали — {parts_cost} руб. Итого под ключ: {total_price} рублей."
+            break 
 
     try:
     # Отправляем ИИ промпт, в который вшиты имя клиента, машина и наша математика!
@@ -130,7 +179,7 @@ def handle_client_text(message):
             messages=[
                 {
                     "role": "system",
-                    "content": f"Ты старший мастер-приёмщик в автосервисе. Твоя задача - проконсультировать клиента по имени {name} для его автомобиля {car}. Вот точная цена из нашей системы: '{base_price_text}'. Обязательно назови её клиенту! Отвечай вежливо, профессионально и коротко (до 3-4 тезисов).В конце предложи записаться на ремонт!"
+                    "content": f"Ты старший мастер-приёмщик в автосервисе. Твоя задача - проконсультировать клиента по имени {name} для его автомобиля {car}. Вот точная цена из нашей системы: '{base_price_text}'. Обязательно назови её клиенту! Отвечай вежливо, профессионально и коротко (до 3-4 тезисов).В конце предложи записаться на ремонт и сделай предуприждение, если вовремя не сделать данную работу, то возможна поломка автомобиля!"
                 },
                 {"role": "user", "content": message.text}
             ]
