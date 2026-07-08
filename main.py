@@ -2,10 +2,12 @@ import os
 import telebot
 import sqlite3
 from dotenv import load_dotenv
-import os
+from openai import OpenAI
+from telebot import types  # Наш вчерашний штурм импорта кнопок!
+
+# Контрольный датчик пути (его можно оставить или стереть)
 print("📍 ВНИМАНИЕ! Бот сейчас физически работает в папке:", os.getcwd())
 
-from openai import OpenAI
 
 # 1. Загружаем секретные ключи безопасности
 load_dotenv()
@@ -107,14 +109,34 @@ def get_car(message, user_name):
     car_model = message.text # Запоминаем машину
     
     # Открываем нашу новую базу данных и записываем готового клиента
-    local_conn = sqlite3.connect('autoservice.db')
+    local_conn = sqlite3.connect(db_path)
     local_cursor = local_conn.cursor()
     local_cursor.execute("INSERT INTO clients (user_id, client_name, car_model) VALUES (?, ?, ?)", 
                          (message.chat.id, user_name, car_model))
     local_conn.commit()
     local_conn.close()
+    # 🛠️ СОЗДАЕМ ИНЛАЙН-КНОПКУ ЗАПИСИ ПРЯМО ЗДЕСЬ 
+    inline_markup = types.InlineKeyboardMarkup()
+    btn_booking = types.InlineKeyboardButton(text="📅 Записаться на ремонт", callback_data="test_click")
+    inline_markup.add(btn_booking) 
     
-    bot.send_message(message.chat.id, f"✅ Отлично! Ваш профиль успешно занесен в CRM-систему.\n👤 Клиент: {user_name}\n🚗 Машина: {car_model}\n\nТеперь вы можете задать ИИ-мастеру любой вопрос по ремонту или стоимости обслуживания!")
+    bot.send_message(
+        message.chat.id, 
+        f"✅ Отлично! Ваш профиль успешно занесен в CRM-систему.\n👤 Клиент: {user_name}\n🚗 Машина: {car_model}\n\nТеперь вы можете общаться с ИИ-мастером или сразу выбрать время для визита к нам:",
+        reply_markup=inline_markup # Прикрепили кнопку!
+    )
+
+@bot.message_handler(func=lambda message: message.text.lower() == "запись")
+def ask_for_booking(message):
+    inline_markup = types.InlineKeyboardMarkup() # Проверь, чтобы было types, а не tepes!
+    
+    btn_info = types.InlineKeyboardButton(text="📅 Выбрать Время", callback_data="test_click")
+    inline_markup.add(btn_info) 
+    
+    # ИСПРАВЛЕНО: прикрепляем нашу переменную inline_markup вместо "text_markup"
+    bot.send_message(message.chat.id, "Для записи на ремонт нажмите кнопку ниже:", reply_markup=inline_markup)
+
+
 
 # Основной обработчик текста с контекстом клиента и математикой
 @bot.message_handler(content_types=['text'])
@@ -190,6 +212,33 @@ def handle_client_text(message):
     except Exception as e:
         bot.delete_message(message.chat.id, waiting_msg.message_id)
         bot.send_message(message.chat.id, f"❌ Не удалось связаться с ИИ-мастнром. Ошибка: {e}")       
+
+@bot.callback_query_handler(func=lambda call: call.data == "test_click")
+def show_calendar(call):
+    bot.answer_callback_query(call.id)
+    all_hours = ["09:00", "12:00", "15:00", "17:00"]
+    local_conn = sqlite3.connect(db_path)
+    local_cursor = local_conn.cursor()
+    local_cursor.execute("SELECT booking_time FROM orders WHERE booking_date = '08.07'") 
+    busy_rows = local_cursor.fetchall()
+    local_conn.close()
+
+    busy_hours = [row[0] for row in busy_rows]
+    time_markup = types.InlineKeyboardMarkup()
+
+    for hour in all_hours:
+        if hour in busy_hours:
+            btn = types.InlineKeyboardButton(text=f"❌ {hour} (Занято)", callback_data="busy_time")
+        else:
+            btn = types.InlineKeyboardButton(text=f"🟢 {hour}", callback_data=f"book_{hour}")
+        time_markup.add(btn)   
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text="📅 Доступное время для записи на сегодня (08.07):\n🟢 — Свободно\n❌ — Занято",
+        reply_markup=time_markup
+    )
+
 
 bot.infinity_polling()
 
