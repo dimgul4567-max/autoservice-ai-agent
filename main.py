@@ -208,7 +208,10 @@ def handle_client_text(message):
         ) 
         ai_responce = completion.choices[0].message.content
         bot.delete_message(message.chat.id, waiting_msg.message_id)
-        bot.send_message(message.chat.id, ai_responce)
+        inline_markup = types.InlineKeyboardMarkup()
+        btn = types.InlineKeyboardButton(text='📅Записаться на ремонт',callback_data="test_click")
+        inline_markup.add(btn)
+        bot.send_message(message.chat.id, ai_responce, reply_markup=inline_markup)
     except Exception as e:
         bot.delete_message(message.chat.id, waiting_msg.message_id)
         bot.send_message(message.chat.id, f"❌ Не удалось связаться с ИИ-мастнром. Ошибка: {e}")       
@@ -238,7 +241,33 @@ def show_calendar(call):
         text="📅 Доступное время для записи на сегодня (08.07):\n🟢 — Свободно\n❌ — Занято",
         reply_markup=time_markup
     )
-
+@bot.callback_query_handler(func=lambda call: call.data.startswith("book_"))
+def save_booking_to_sql(call):
+    bot.answer_callback_query(call.id)
+    selected_time = call.data.replace("book_", "")
+    local_conn = sqlite3.connect(db_path)
+    local_cursor = local_conn.cursor()
+    local_cursor.execute("SELECT client_name, car_model FROM clients WHERE user_id = ?", (call.message.chat.id,))
+    client_data = local_cursor.fetchone()
+    if client_data:
+        name = client_data[0]
+        car = client_data[1]
+    else:
+        name = "Неизвестный"
+        car = "Автомобиль"
+    local_cursor.execute(
+        "INSERT INTO orders (user_id, client_name, car_model, service_name, booking_date, booking_time) VALUES (?, ?, ?, ?, ?, ?)",
+        (call.message.chat.id, name, car, "Комплексный ремонт/ТО", "08.07", selected_time)
+    )
+    local_conn.commit()
+    local_conn.close()
+ 
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text=f"🥳 **Успешная запись на ремонт!**\n\n👤 **Мастер принял заявку на имя**: {name}\n🚗 **Автомобиль**: {car}\n📅 *Дата**: 08.07 (Сегодня)\n⏰ **Точное время**: {selected_time}\n\nЖдём ВАС в нашем автотехцентре!",
+        reply_markup=None
+    )
 
 bot.infinity_polling()
 
